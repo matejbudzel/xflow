@@ -16,10 +16,11 @@ The project includes both the CircuitPython firmware that runs on the device and
 - Allow activities and settings to be pushed over USB serial or HTTP.
 - Support both Wi-Fi client mode and an explicit Wi-Fi AP mode for offline management.
 - Provide first-class support for downloading and reading a daily digest in XTH format.
+- Use the SD card as the primary writable/persistent storage for mutable XFlow data.
 - Allow the replaceable application code to be updated without reflashing CircuitPython.
-- Keep the application core independent from the physical display, buttons, radios, and transports.
+- Keep the application core independent from the physical display, buttons, radios, transports, and concrete storage paths.
 - Run the same core and rendering code on desktop Python for development.
-- Provide a browser-based simulator for the display, buttons, radios, serial transport, battery, and other device state.
+- Provide a browser-based simulator for the display, buttons, radios, serial transport, battery, storage, and other device state.
 - Include host-side tools for task push, time sync, serial/BLE events, notifications, digest workflows, and development workflows.
 
 ## Activity format
@@ -107,6 +108,53 @@ Wall-clock time may be synchronized from any available source, for example:
 - An HTTP API endpoint while the device is online.
 - A browser management UI that sends the browser/host time to the device.
 
+## Persistent storage
+
+The SD card is the primary writable and persistent storage for XFlow.
+
+The internal CircuitPython filesystem should remain as close as practical to **boot/runtime code only**. Mutable application data belongs on SD so it survives application updates and avoids unnecessary writes to the internal flash.
+
+Expected SD-backed data includes:
+
+- activity lists,
+- device/user settings,
+- Wi-Fi credentials,
+- downloaded daily digests,
+- persistent application state,
+- caches,
+- staged application updates,
+- other downloaded or user-managed content.
+
+A possible on-device layout is:
+
+```text
+/sd/
+├── config/
+│   ├── wifi.txt
+│   └── settings.json
+├── tasks/
+│   └── current.txt
+├── digest/
+│   └── current.xth
+├── state/
+│   └── state.json
+├── cache/
+└── updates/
+```
+
+The exact filenames and formats are provisional. Application/core code must not depend directly on `/sd` paths; persistent access should go through a storage abstraction.
+
+The desktop simulator should provide the same storage interface backed by a normal host directory such as `sim-data/`, allowing the same persistence behavior to be exercised without hardware.
+
+Boot and recovery must not depend completely on a healthy SD card. The minimal `code.py` bootstrap and enough recovery behavior to report or handle a missing/unreadable SD card should remain available from internal flash. If the SD card is absent or corrupted, XFlow should fail into a usable diagnostic/recovery state rather than crash-looping.
+
+Conceptually:
+
+```text
+internal flash = CircuitPython + bootstrap + executable application code
+SD card        = config + user data + state + cache + downloads + staged updates
+```
+
 ## Power management
 
 Battery life is a first-class design constraint.
@@ -142,6 +190,8 @@ Conceptually:
 ```
 
 The core must not need to know whether it is running on the physical XTEink device or on desktop Python.
+
+Persistent storage is also platform-abstracted: the CircuitPython platform normally maps it to SD storage, while the desktop platform maps it to a host directory.
 
 ## Rendering
 
@@ -285,7 +335,7 @@ code.py
 
 `code.py` should change rarely. The normal OTA/update target is `app.py` and the application modules it owns.
 
-Device-specific configuration is stored separately from application code. At minimum it should support:
+Device-specific configuration is stored separately from application code and, under normal operation, on the SD card. At minimum it should support:
 
 - Wi-Fi SSID and password,
 - application update source URL,
@@ -293,7 +343,7 @@ Device-specific configuration is stored separately from application code. At min
 - optional task-list source URL,
 - networking/power behavior settings.
 
-A failed application update should not require reflashing CircuitPython merely to recover the device. More advanced rollback/integrity mechanisms can be added later.
+Application updates may be downloaded/staged on SD before promotion to the executable location. A failed application update should not require reflashing CircuitPython merely to recover the device. More advanced rollback/integrity mechanisms can be added later.
 
 ## Desktop/browser simulator
 
@@ -309,7 +359,8 @@ At minimum this includes:
 - BLE -> fake enable/disable state and emitted advertisement events,
 - USB serial -> fake bidirectional RX/TX stream,
 - battery -> configurable charge level, voltage, USB/power state,
-- wall clock -> known/unknown time and explicit time-sync events.
+- wall clock -> known/unknown time and explicit time-sync events,
+- persistent storage -> host-directory-backed fake SD storage, including removable/missing/error states where useful.
 
 A lightweight development HTTP server hosts an SPA that shows the rendered device screen and provides controls for the simulated environment.
 
@@ -323,9 +374,10 @@ The SPA should be able to:
 - change battery/power state,
 - make wall-clock time available/unavailable,
 - emulate successful or failed remote downloads,
+- inspect or manipulate simulated persistent storage where useful,
 - expose useful debug/status information.
 
-The browser remains a development surface around the real Python application. Task behavior, digest behavior, state machines, rendering, and service logic stay in the same Python code used by the physical device.
+The browser remains a development surface around the real Python application. Task behavior, digest behavior, state machines, rendering, storage, and service logic stay in the same Python code used by the physical device.
 
 ## Host and development utilities
 
@@ -344,7 +396,7 @@ Expected utilities include:
 - show native macOS notifications for activity events,
 - run the desktop/browser device simulator,
 - render screens to image files for UI development and tests,
-- exercise the application core and simulated transports without physical hardware.
+- exercise the application core and simulated transports/storage without physical hardware.
 
 The exact implementation language and packaging are not fixed yet. Simple Python utilities are preferred where they keep the device/host workflow easy to inspect and modify.
 
@@ -362,6 +414,7 @@ xflow/
 │   │   ├── state.py
 │   │   ├── timer.py
 │   │   └── clock.py
+│   ├── storage/
 │   ├── ui/
 │   ├── services/
 │   └── platform/
@@ -374,6 +427,7 @@ xflow/
 │   └── notify.py
 ├── simulator/
 │   ├── server.py
+│   ├── sim-data/
 │   └── web/
 ├── tools/
 └── docs/
