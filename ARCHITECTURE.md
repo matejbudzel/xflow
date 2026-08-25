@@ -65,19 +65,24 @@ Mutable data is stored through a storage abstraction. Application code must not 
 
 ### Physical device
 
-The SD card is the preferred home for persistent mutable state:
+The SD card is the preferred home for persistent mutable state. The baseline layout is:
 
 ```text
 /sd/
-    config/
+    system/
+        configuration.json
+        state.json
     tasks/
+        current.txt
     digest/
-    state/
+        current.xth
     cache/
     updates/
 ```
 
-Expected categories include:
+The exact set of state/cache files may evolve, but configuration has a stable conceptual home at `/sd/system/configuration.json`.
+
+Expected mutable categories include:
 
 - Wi-Fi credentials and device settings,
 - current task queue,
@@ -91,6 +96,7 @@ Internal flash is primarily for:
 - CircuitPython,
 - `code.py`,
 - executable application code,
+- static management assets that are part of the application build,
 - the minimum bootstrap/recovery material required to start without the SD card.
 
 ### Simulator
@@ -98,6 +104,22 @@ Internal flash is primarily for:
 Desktop Python uses the same logical storage API backed by a local directory such as `sim-data/`.
 
 The simulator must also be able to emulate absent, read-only, or failing storage.
+
+## Configuration
+
+Device configuration is JSON stored through the storage abstraction, with `/sd/system/configuration.json` as the physical-device baseline.
+
+Configuration should cover at least:
+
+- Wi-Fi SSID and password,
+- Wi-Fi/session behavior,
+- inactivity timeout,
+- daily digest URL,
+- application update manifest URL,
+- BLE event behavior,
+- display full-refresh interval.
+
+Secrets and authentication-bearing URLs are runtime data and must not be committed to Git.
 
 ## Time model
 
@@ -163,40 +185,78 @@ The digest subsystem should:
 - optionally refresh opportunistically during an already-requested Wi-Fi client session,
 - preserve the last successfully downloaded digest if refresh fails,
 - keep the digest readable offline,
-- expose parsed content to a basic on-device XTH viewer.
+- expose content to a basic on-device XTH viewer.
 
 Digest fetching must not require Wi-Fi to remain enabled continuously.
 
+### XTH handling
+
+CrossPoint Reader is the primary behavioral/file-format reference for XTH support on the XTEink X4. XFlow does not depend on its C/C++ implementation, but its parser and viewer are useful evidence for the file structure and constrained-device access patterns.
+
+XTH content may be large and must not be assumed to fit into RAM. Parsing and page access should prefer streaming/chunked reads and SD-backed indexes/caches where useful.
+
+XTH can contain 2-bit page data. XFlow converts/dithers source grayscale into its shared 1-bit logical framebuffer before display, so the physical X4 and browser simulator render the same final pixels.
+
+Initial XTH support should implement the subset required by the current daily digest rather than attempting a generic document-engine rewrite.
+
 ## Rendering
 
-Application screens target a logical **800×480 grayscale surface**.
+Application screens target a logical **800×480 1-bit black/white framebuffer**.
 
-UI code should describe what is drawn without depending on whether the output destination is physical e-paper or a desktop bitmap.
+There is one rendering result regardless of destination:
 
-Backends include:
+```text
+UI/content
+    -> optional grayscale/source decoding
+    -> shared dithering/threshold pipeline
+    -> 800x480 1-bit framebuffer
+    -> physical display OR browser bitmap
+```
 
-- physical XTEink display backend,
-- desktop bitmap/image backend,
-- browser simulator frame delivery.
+Dithering is therefore not a device-backend detail. The simulator must show the same 1-bit result that the physical e-paper backend receives.
 
-The display backend owns any conversion required by the actual e-paper panel, including monochrome conversion or dithering if needed.
+### E-paper refresh policy
 
-The application must not rely on frequent refreshes. E-paper updates should be deliberate and tied to meaningful state changes or appropriately coarse timer updates.
+Screen composition is separate from physical refresh policy.
+
+Every committed screen-render request increments a global partial-refresh counter. The default policy is:
+
+- use partial/fast refreshes for normal updates,
+- force a full refresh after 15 partial refreshes,
+- reset the counter after a full refresh,
+- allow the full-refresh interval to be configured globally.
+
+This policy is system-wide rather than tied to a particular screen such as the task timer or digest reader. Any screen may request that the next presentation be forced to a full refresh when necessary.
+
+The physical display adapter owns the actual waveform/driver calls, while the application-facing presentation service owns the global refresh-cycle policy.
+
+The default of 15 is intentionally aligned with proven XTEink/CrossPoint behavior and can be changed after hardware testing if XFlow's UI update patterns need a different trade-off.
+
+The application must not rely on second-by-second display refreshes. Timer rendering should remain coarse enough for e-paper and battery constraints.
 
 ## Input model
 
 Application commands are independent from their physical source.
 
-Possible input sources include:
+### Physical controls
 
-- physical XTEink buttons,
-- simulator/browser buttons,
-- USB serial commands,
-- HTTP API calls.
+The XTEink X4 application-visible controls are modeled as seven buttons:
 
-A button press and an equivalent remote command should reach the same application service rather than duplicate behavior in separate code paths.
+```text
+Bottom area:  2 x 2 buttons
+Right side:   2 buttons
+Right side:   Power button
+```
 
-Exact physical button mapping is intentionally outside this architecture until the interaction design is finalized.
+The hardware reset control is not treated as an application input.
+
+Exact action mapping may evolve with interaction design, but these physical positions are stable input identities and should be mirrored by the simulator.
+
+### Simulator controls
+
+The browser simulator should present controls in approximately the same spatial arrangement as the physical X4 rather than as an unrelated generic button list. This makes UI/input behavior easier to reason about before hardware testing.
+
+A physical button press, simulated button press, serial command, and equivalent HTTP operation should reach the same application service rather than duplicate behavior in separate code paths.
 
 ## Management services
 
@@ -212,7 +272,7 @@ set wall-clock time
 get/update settings
 get battery/power state
 refresh/get digest status
-trigger or stage application update
+check/stage/apply application update
 ```
 
 USB serial and HTTP adapt these services to different transports.
@@ -238,7 +298,7 @@ TASK_STOPPED
 TASK_DONE
 ```
 
-The wire protocol should remain simple and cheap to parse on CircuitPython. Human readability is preferred where it does not complicate the implementation.
+The exact wire protocol may evolve during implementation. It should follow conventional line-oriented request/response framing where practical, remain cheap to parse on CircuitPython, and keep asynchronous event messages unambiguous.
 
 ## BLE event output
 
@@ -273,7 +333,7 @@ The device connects to configured infrastructure Wi-Fi. A successful session may
 
 - NTP time synchronization,
 - digest refresh,
-- application update download,
+- application update check/download,
 - optional remote task retrieval,
 - HTTP management.
 
@@ -289,11 +349,49 @@ AP mode does not imply Internet access.
 
 ## HTTP management
 
-The same lightweight HTTP service should work in client and AP modes.
+The same lightweight HTTP service works in client and AP modes and listens on port 80 unless platform constraints require otherwise.
 
-A management SPA can use it to configure and inspect the real device.
+The management API is REST-style and uses JSON for structured request/response payloads.
 
-The exact endpoint names are implementation details, but the API should map directly onto the transport-independent application services.
+Endpoint naming is not architectural, but the service surface should map directly onto transport-independent application services rather than duplicating behavior.
+
+A static `index.html`/SPA is part of the application build and is served by the real device. It calls the same REST endpoints used by other HTTP clients. The device does not generate the SPA dynamically.
+
+The desktop simulator may serve the same management SPA plus additional simulator-only controls for fake hardware state.
+
+## Application build and updates
+
+Application updates are manifest-driven and originate from a configurable HTTP(S) URL.
+
+The development/build machine produces a deployable application artifact set and publishes it through an ordinary static HTTP server such as nginx. XFlow does not depend on nginx specifically; it only requires HTTP access to the configured manifest and files.
+
+The update manifest should contain at least:
+
+- a release/build identifier,
+- a list of files belonging to the application build,
+- download paths/URLs,
+- integrity metadata such as file size and/or hash.
+
+A build identifier may initially be timestamp-based as long as ordering/comparison is deterministic.
+
+Baseline update flow:
+
+```text
+user requests update check
+    -> download manifest
+    -> compare release/build ID
+    -> offer/update if newer
+    -> download files to SD staging
+    -> verify staged files
+    -> promote application build
+    -> restart application/device
+```
+
+The management SPA should expose at least an update-check action and, when an update exists, an explicit apply/update action.
+
+`code.py` remains outside ordinary application replacement. The bootstrap must keep enough recovery behavior to survive an incomplete or broken application promotion. The exact amount of retained previous-version data may evolve, but staging and verification happen before promotion.
+
+Static management SPA assets are part of the same application build manifest as the Python application code.
 
 ## Power management
 
@@ -311,7 +409,28 @@ Rules:
 
 Battery voltage/level and USB/power state are exposed through the platform abstraction when available.
 
-Exact deep-sleep wake sources and button behavior are hardware-dependent and should be finalized only after testing the XTEink X4 implementation.
+### Wake source
+
+The baseline design uses the **Power button as the only required deep-sleep wake control**. XFlow should not spend implementation complexity on waking from the six normal UI buttons unless later evidence provides a strong reason to support it.
+
+This matches the established interaction model of existing XTEink X4 firmware such as CrossPoint Reader: normal controls are application inputs while Power owns the sleep/wake lifecycle.
+
+## Battery abstraction and simulation
+
+The platform battery service exposes at least:
+
+- estimated level/percentage when available,
+- measured voltage when available,
+- USB/external-power state when available.
+
+The browser simulator provides convenient battery presets rather than requiring raw values for every test. At minimum:
+
+- full,
+- medium,
+- low,
+- critical.
+
+USB/charging/external-power state should be independently switchable. The simulator may additionally allow exact voltage/percentage overrides for edge-case testing.
 
 ## Host utilities
 
@@ -338,17 +457,33 @@ The simulator runs the real core, services, and UI code under normal desktop Pyt
 
 Platform dependencies are replaced with controllable fake adapters:
 
-- display -> 800×480 bitmap buffer,
-- buttons -> synthetic input events,
+- display -> exact 800×480 1-bit application framebuffer rendered as an image,
+- buttons -> seven synthetic controls arranged like the physical X4,
 - Wi-Fi -> off/client/AP state, IP address, connectivity success/failure,
 - Internet -> controllable remote-request success/failure,
 - BLE -> enable/disable state and captured advertisements,
 - USB serial -> bidirectional fake stream,
-- battery -> configurable voltage/level/USB state,
+- battery -> full/medium/low/critical presets plus USB/power state and optional exact overrides,
 - wall clock -> known/unknown state and explicit sync,
 - storage -> local directory plus injected failure modes.
 
 A lightweight local HTTP server hosts a browser SPA around the simulated device. The browser is a development control surface, not a second implementation of XFlow behavior.
+
+## Runtime compatibility testing
+
+Portable application logic is primarily unit-tested on normal CPython because that gives the fastest development loop and best tooling.
+
+A second smoke-test layer should run portable/device-intended Python under CircuitPython's native Unix port when practical. This is not hardware emulation and does not validate XTEink I/O, but it can catch language/runtime assumptions that work on CPython and fail under the CircuitPython/MicroPython runtime family.
+
+The Unix port is not a complete substitute for the real CircuitPython board build and omits some CircuitPython-specific modules. Therefore the intended confidence ladder is:
+
+```text
+CPython unit/integration tests
+    -> CircuitPython Unix-port compatibility smoke tests
+        -> real XTEink X4 hardware tests
+```
+
+Hardware adapters remain covered by focused real-device tests where desktop/native runtimes cannot represent the behavior.
 
 ## Event flow
 
@@ -377,6 +512,18 @@ transports -> application services
 ```
 
 Core modules must not import CircuitPython-specific hardware modules, simulator web-server modules, or host-tool code.
+
+## Reference implementations
+
+CrossPoint Reader is a useful external reference for XTEink-specific behavior, including:
+
+- X4 physical controls,
+- power/sleep interaction,
+- XTH/XTCH parsing and streaming access,
+- SD-backed caching on the ESP32-C3,
+- periodic partial/full e-paper refresh policy.
+
+XFlow should reuse proven constraints and file-format knowledge where useful, but it remains an independent Python/CircuitPython architecture rather than a port of CrossPoint's C/C++ application structure.
 
 ## Repository shape
 
