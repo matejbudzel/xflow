@@ -10,7 +10,7 @@ The project includes the CircuitPython device application together with host and
 - **Battery first.** Wi-Fi and BLE stay disabled unless they are explicitly needed. A running activity prevents automatic sleep; otherwise inactivity may put the device into deep sleep.
 - **Portable core.** Application state, behavior, and screen composition are independent from physical hardware. The same core should run on the XTEink X4 and on desktop Python.
 - **Abstract I/O.** Physical buttons, simulated buttons, USB serial, HTTP, BLE events, display output, time, networking, battery state, and persistent storage are accessed through platform abstractions.
-- **One logical display.** Application screens target an 800×480 grayscale surface. The physical device backend presents it on e-paper; development backends render it to bitmap images.
+- **One logical display.** Application screens target an 800×480 1-bit black/white surface. Source content may contain grayscale, but it is converted/dithered into the shared 1-bit representation before presentation. The physical display and browser simulator therefore show the same logical pixels.
 - **Multiple management transports.** USB serial and HTTP expose the same underlying application services. HTTP may be available while the device is a Wi-Fi client or while it provides its own access point.
 - **Optional wall-clock time.** Activity timing uses monotonic time and does not depend on real date/time. Wall-clock time may be learned opportunistically from NTP, USB serial, HTTP, or a browser.
 - **SD-backed mutable state.** Internal flash is primarily for CircuitPython, bootstrap code, and executable application code. User data, configuration, downloaded content, persistent state, caches, and staged updates belong on the SD card when available.
@@ -49,7 +49,7 @@ USB serial is bidirectional and can be used for management, time synchronization
 
 ### Development simulator
 
-The desktop/browser simulator runs the real application core while replacing hardware with controllable fakes. It should simulate the 800×480 display, buttons, Wi-Fi modes, BLE, USB serial, battery/power state, wall-clock availability, persistent storage, and remote-download success or failure.
+The desktop/browser simulator runs the real application core while replacing hardware with controllable fakes. It should simulate the 800×480 display, physical button layout, Wi-Fi modes, BLE, USB serial, battery/power state, wall-clock availability, persistent storage, and remote-download success or failure.
 
 ## Documentation
 
