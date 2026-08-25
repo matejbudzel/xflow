@@ -54,6 +54,8 @@ Prefer the Python standard library where practical. Add dependencies only when t
 
 Platform-specific behavior, such as native desktop notifications, should be isolated behind small adapters so the rest of the tool remains portable.
 
+Build/release helpers, simulator launchers, test wrappers, serial tools, BLE listeners, and update-manifest generators all fall under this Python-first rule.
+
 ## CircuitPython compatibility
 
 Code intended to run on the XTEink X4 must remain compatible with CircuitPython and the device's memory constraints.
@@ -62,7 +64,9 @@ Do not assume normal CPython features or packages are available on-device.
 
 Keep platform-specific imports out of portable core modules.
 
-Prefer small modules, explicit data flow, limited allocations, and simple data formats over framework-heavy abstractions.
+Prefer small modules, explicit data flow, limited allocations, streaming I/O, and simple data formats over framework-heavy abstractions.
+
+Where practical, portable/device-intended Python should pass a smoke test under CircuitPython's Unix port in addition to normal CPython tests. The Unix port is a compatibility check, not hardware emulation and not a substitute for real X4 tests.
 
 ## Dependency direction
 
@@ -84,6 +88,10 @@ The simulator is not a mock rewrite of the product. It should run the same core 
 
 When adding hardware capabilities such as Wi-Fi, BLE, serial, battery state, storage, or time, consider whether the simulator needs a controllable fake for that capability.
 
+The simulator should mirror the physical X4's application-visible button layout: four bottom buttons, two side buttons, and Power.
+
+Battery simulation must provide at least full, medium, low, and critical presets plus an independently controllable USB/external-power state.
+
 ## Storage
 
 Mutable persistent data should use the storage abstraction.
@@ -97,9 +105,11 @@ On the device, prefer the SD card for:
 - caches,
 - staged updates.
 
-Do not spread hard-coded `/sd/...` paths through application logic.
+The baseline configuration location is `/sd/system/configuration.json`, but application/core code must not spread hard-coded `/sd/...` paths throughout the codebase.
 
 The application and bootstrap must handle unavailable or broken SD storage without entering an unrecoverable crash loop.
+
+Large document inputs such as XTH must be treated as streamable/SD-backed data rather than assumed to fit in RAM.
 
 ## Power
 
@@ -110,6 +120,7 @@ Treat battery life as a functional requirement.
 - Prefer short, explicit radio sessions.
 - Do not introduce polling loops that keep the MCU or radios active without a clear need.
 - Activity timing must not require network connectivity.
+- Treat Power as the required deep-sleep wake control; do not add wake support for the other six UI buttons without evidence that the complexity is worthwhile.
 
 ## Time
 
@@ -121,9 +132,13 @@ Keep monotonic time and wall-clock time conceptually separate.
 
 ## Rendering
 
-Application UI targets a logical 800×480 grayscale surface.
+Application UI targets a logical **800×480 1-bit black/white framebuffer**.
 
 Do not couple screen composition directly to the physical e-paper driver.
+
+If source content is grayscale or 2-bit, convert/dither it before it reaches the shared logical framebuffer. The browser simulator and physical device must consume the same final 1-bit pixels rather than render different-quality versions of the UI.
+
+Keep the global e-paper refresh policy separate from individual screens. The baseline is partial/fast refresh with a forced full refresh after 15 partial presentations, configurable at system level.
 
 Keep e-paper refresh costs in mind. Avoid designs that require continuous or second-by-second full-screen updates.
 
@@ -135,6 +150,18 @@ Do not implement separate task semantics, settings behavior, or update rules ind
 
 BLE is primarily an optional short-lived event output unless the architecture is deliberately changed.
 
+HTTP management uses REST-style JSON services. The on-device management SPA is a static build artifact served by the device and should not contain a second implementation of application behavior.
+
+## Updates and build artifacts
+
+Application updates are manifest-driven.
+
+Build tooling should produce a deterministic release/build identifier, a file list, and integrity metadata. Candidate files are staged and verified before promotion.
+
+Keep `code.py` outside normal application replacement unless a deliberate bootstrap migration is being implemented.
+
+Do not make the device depend on a particular development web server. nginx may host artifacts during development, but the protocol contract is ordinary HTTP(S).
+
 ## Data formats
 
 Prefer formats that are:
@@ -144,7 +171,7 @@ Prefer formats that are:
 - deterministic,
 - easy to generate from Python host tools.
 
-Do not introduce JSON or a complex schema automatically when a simple line-oriented format is sufficient.
+Use JSON for structured configuration and REST API payloads. Do not introduce JSON or a complex schema automatically for line-oriented data such as the simple task list when a simpler format is sufficient.
 
 ## Error handling and recovery
 
@@ -160,9 +187,13 @@ Examples:
 
 ## Tests
 
-Write tests primarily against portable CPython-compatible logic.
+Use a three-level confidence model where practical:
 
-Important areas include:
+1. **CPython tests** for fast unit/integration coverage of portable logic.
+2. **CircuitPython Unix-port smoke tests** for runtime/language compatibility of portable/device-intended modules that do not require real board bindings.
+3. **Real XTEink X4 tests** for display, buttons, sleep/wake, SD, battery, USB, Wi-Fi, BLE, and other hardware behavior.
+
+Important automated areas include:
 
 - state machines,
 - timing semantics,
@@ -170,9 +201,11 @@ Important areas include:
 - storage behavior,
 - service behavior,
 - error and recovery paths,
-- simulator/platform contract behavior.
+- simulator/platform contract behavior,
+- deterministic 1-bit rendering,
+- global partial/full refresh-cycle behavior.
 
-Avoid tests that require physical hardware unless the behavior cannot be meaningfully tested otherwise.
+Avoid tests that require physical hardware when the behavior can be meaningfully verified at a lower layer.
 
 ## Scope discipline
 
@@ -186,5 +219,5 @@ When implementation exposes a flaw in the documented architecture, change the ar
 
 - Never commit credentials, Wi-Fi passwords, authentication-bearing private URLs, or other secrets.
 - Provide example configuration with clearly fake values when examples are needed.
-- Keep generated runtime data, simulator state, caches, downloaded digests, and local credentials out of Git.
+- Keep generated runtime data, simulator state, caches, downloaded digests, staged update artifacts, and local credentials out of Git unless a specific fixture is intentionally committed.
 - Keep commit messages concise and in English.
